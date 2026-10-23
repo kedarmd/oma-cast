@@ -18,7 +18,7 @@ function body(text, signature, indentation) {
 function harness() {
   const events = []
   const service = {
-    checking: false, pendingArgv: null, output: "",
+    helper: "kay-cast-desktop", checking: false, pendingArgv: null, output: "",
     prepared: argv => events.push({ argv }), failed: message => events.push({ message })
   }
   const check = { running: false }
@@ -123,7 +123,9 @@ test("agent shortcut is limited to root search and preserves normal Enter action
   const window = {
     atRoot: true, actionPanelOpen: false, view: { kind: "root" },
     askAgent: () => events.push("agent"), performNth: n => events.push(n),
-    saveAlias: () => events.push("save-alias")
+    saveAlias: () => events.push("save-alias"),
+    isActionPanelKey: () => false, direction: () => 0,
+    handleArgumentKey: () => false, argFocus: -1, argDefs: []
   }
   const context = vm.createContext({ Qt, window, event: null })
   function press(modifiers) {

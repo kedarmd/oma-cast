@@ -1,9 +1,11 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import "../core/Agent.js" as Agent
 
 Item {
   id: service
+  readonly property string helper: decodeURIComponent(Qt.resolvedUrl("../../bin/kay-cast-desktop").toString().replace("file://", ""))
   property bool checking: false
   property var pendingArgv: null
   property string output: ""
@@ -11,7 +13,7 @@ Item {
   signal failed(string message)
 
   function start(query) {
-    var argv = Agent.launchArgv(query)
+    var argv = Agent.launchArgv(query, service.helper)
     if (service.checking) throw new Error("Agent launch is already being checked")
     service.pendingArgv = argv
     service.output = ""
@@ -39,8 +41,11 @@ Item {
 
   Process {
     id: check
-    command: ["bash", "-lc", Agent.CHECK_SCRIPT]
+    command: [service.helper, "agent-check"]
     stdout: SplitParser {
+      onRead: function(line) { service.output = (service.output + line + "\n").slice(0, 400) }
+    }
+    stderr: SplitParser {
       onRead: function(line) { service.output = (service.output + line + "\n").slice(0, 400) }
     }
     onExited: function(exitCode, exitStatus) {
@@ -50,7 +55,7 @@ Item {
       service.checking = false
       if (!argv) return
       if (exitCode !== 0 || exitStatus !== 0) {
-        service.failed(service.output.trim() || "Could not check the default agent. Update Omarchy and try again.")
+        service.failed(service.output.trim() || "Could not check the default agent. Check KAY_CAST_AGENT and KAY_CAST_TERMINAL.")
         return
       }
       service.prepared(argv)

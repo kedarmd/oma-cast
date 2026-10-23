@@ -1,12 +1,12 @@
 import QtQuick
-import qs.Commons
+import "../compat"
 
 Row {
   id: hint
 
   property string keys: ""
   property color color: "white"
-  property string fontFamily: Style.font.menuFamily
+  property string fontFamily: Style.iconFamily
   property int pixelSize: Style.font.caption
   property real zoom: 1
 
@@ -20,7 +20,9 @@ Row {
       height: label.implicitHeight + Math.round(Style.space(4) * hint.zoom)
       width: Math.max(height, label.implicitWidth + Math.round(Style.space(10) * hint.zoom))
       radius: Math.round(Style.space(4) * hint.zoom)
-      color: Util.alpha(hint.color, 0.1)
+      color: Util.alpha(hint.color, 0.06)
+      border.width: 1
+      border.color: Util.alpha(hint.color, 0.1)
 
       Text {
         id: label
@@ -30,7 +32,7 @@ Row {
         color: hint.color
         opacity: 0.75
         font.family: hint.fontFamily
-        font.pixelSize: hint.pixelSize
+        font.pixelSize: Math.round(hint.pixelSize * hint.zoom)
       }
     }
   }

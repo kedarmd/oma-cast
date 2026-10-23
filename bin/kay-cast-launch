@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Launch outside kay-cast.service: double-fork/setsid alone does not escape its cgroup.
+set -euo pipefail
+working_dir=${1:?usage: kay-cast-launch <working-directory> <command> [args]}
+shift
+[[ $# -gt 0 ]] || exit 1
+cd -- "$working_dir"
+
+# A manually started shell can also run without a systemd user manager.
+if ! command -v systemd-run >/dev/null || ! systemctl --user show-environment >/dev/null 2>&1; then
+  exec "$@"
+fi
+
+args=(--user --quiet --collect --service-type=exec --property=ExitType=cgroup
+      --expand-environment=no "--working-directory=$PWD")
+# Preserve the calling desktop environment without putting its values in argv.
+# Service-control variables belong to the new unit, not to its launching service.
+while IFS= read -r name; do
+  [[ $name =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
+  case "$name" in
+    NOTIFY_SOCKET|INVOCATION_ID|JOURNAL_STREAM|SYSTEMD_EXEC_PID|WATCHDOG_PID|WATCHDOG_USEC|MAINPID|LISTEN_FDS|LISTEN_PID|LISTEN_FDNAMES) continue ;;
+  esac
+  args+=("--setenv=$name")
+done < <(compgen -e)
+exec systemd-run "${args[@]}" -- "$@"

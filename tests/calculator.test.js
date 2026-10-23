@@ -117,6 +117,32 @@ test("captions and copy text", () => {
   assert.equal(C.words(-21), "Minus Twenty-one")
 })
 
+test("mixed quantities, work-time preferences and configurable rem conversion", () => {
+  assert.equal(result("5 ft 3 in"), "5.25 ft")
+  assert.equal(result("5 ft 3 in to cm"), "160.02 cm")
+  assert.equal(result("1 m 50 cm"), "1.5 m")
+  assert.equal(result("1 h 30 min + 45 min"), "2.25 hours")
+  assert.equal(result("40 hours in work days"), "5 work days")
+  assert.equal(result("2 work weeks to hours"), "80 hours")
+  assert.equal(result("15 hours in workdays", { ...env, workHoursPerDay: 7.5 }), "2 work days")
+  assert.equal(result("16px to rem", { ...env, remToPxRate: 10 }), "1.6 rem")
+  assert.equal(C.evaluate("3 workdays from now", env), null)
+})
+
+test("Unix timestamps convert to and from dates", () => {
+  const stamp = C.evaluate("unix 1700000000", env)
+  assert.equal(stamp.result, "Tuesday, 14 November 2023 at 5:13 PM")
+  assert.equal(stamp.inputCaption, "Unix Timestamp")
+  assert.equal(result("1700000000 to date"), stamp.result)
+  assert.equal(result("1700000000000 to date"), stamp.result)
+  assert.equal(result("timestamp 1700000000"), stamp.result)
+  const now = C.evaluate("now to unix", env)
+  assert.equal(now.result, String(NOW / 1000))
+  assert.equal(result("unix time"), String(NOW / 1000))
+  assert.equal(result("2023-11-14 to unix"), "1699938000")
+  for (const q of ["unix", "epoch", "timestamp", "date"]) assert.equal(C.evaluate(q, env), null, q)
+})
+
 test("history is newest first, unique, pruned after 90 days and capped", () => {
   let h = []
   h = C.pushHistory(h, { id: "1", query: "2+2", result: "4", copy: "4", kind: "math" }, NOW - 100 * 864e5)

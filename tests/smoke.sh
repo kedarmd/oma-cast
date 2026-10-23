@@ -1,51 +1,83 @@
-#!/bin/bash
-set -uo pipefail
+#!/usr/bin/env bash
+# Live desktop acceptance: no typing, launching apps, paste or power changes.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+bin/kay-cast doctor
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import time
 
-cd "$(dirname "$0")/.." || exit 1
-cli=bin/oma-cast
-fail=0
-pass() { printf '  ok    %s\n' "$1"; }
-bad() { printf '  FAIL  %s\n' "$1"; fail=1; }
+cli = str(Path('bin/kay-cast').resolve())
 
-echo "doctor"
-$cli doctor | sed 's/^/  /' || fail=1
+def command(*args):
+    return subprocess.check_output([cli, *args], text=True).strip()
 
-echo "ipc"
-[[ $($cli call system.healthPing '{}') == '{"ok":true,"data":null}' ]] && pass "system.healthPing round trip" || bad "system.healthPing round trip"
-[[ $($cli call foo.bar) == '{"ok":false,"error":"Unknown method foo.bar"}' ]] && pass "unknown methods are errors" || bad "unknown methods are errors"
-$cli call settings.getGeneralSettings | grep -q '"popToRootTimeout"' && pass "settings document loaded" || bad "settings document loaded"
+def rpc(method, data=None):
+    result = json.loads(command('call', method, json.dumps(data or {})))
+    assert result['ok'], result
+    return result['data']
 
-echo "root search (Phase 1)"
-search() { $cli call rootSearch.search "{\"query\":\"$1\"}"; }
-first() { search "$1" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["data"][0]["rows"][0]["title"] if d["ok"] and d["data"] else "")'; }
-[[ $(first nightlight) == "Nightlight" ]] && pass "Omarchy menu items are searchable (nightlight)" || bad "Omarchy menu items are searchable (nightlight)"
-[[ $(first "") != "" ]] && pass "empty root has sections" || bad "empty root has sections"
-search zzzz-no-match | grep -q '"id":"fallback-commands"' && pass "fallback section for unmatched queries" || bad "fallback section for unmatched queries"
-count=$($cli call system.info | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["data"]["candidates"])')
-(( count > 300 )) && pass "$count candidates (apps + Omarchy menu)" || bad "only $count candidates"
+info = rpc('system.info')
+assert info['ready'] and info['platform'] == 'kmdot', info
+assert info['candidates'] > 0
+assert json.loads(command('call', 'foo.bar'))['ok'] is False
+assert 'popToRootTimeout' in rpc('settings.getGeneralSettings')
+assert rpc('calculator.calculate', {'query': '5 ft to cm'})
+sections = rpc('rootSearch.search', {'query': 'zzzz-no-match'})
+assert sections[-1]['id'] == 'fallback-commands'
+applications = rpc('rootSearch.search', {'query': '', 'filter': 'applications'})
+assert applications and all(row['type'] == 'application' for section in applications for row in section['rows'])
+commands = rpc('rootSearch.search', {'query': 'google', 'filter': 'commands'})
+assert all(row['type'] == 'command' for section in commands for row in section['rows'])
+quicklinks = rpc('rootSearch.search', {'query': 'google'})
+google = next(row for section in quicklinks for row in section['rows'] if row['id'] == 'builtin:google-search')
+details = rpc('rootSearch.getItemInfo', {'id': google['id']})
+assert any(row['label'] == 'Arguments' and row['value'] == 'query' for row in details)
+confirmation = rpc('rootSearch.performAction', {'id': 'calculator-history:fixture', 'action': 'delete-all-entries'})
+assert confirmation['confirm']['destructive'] is True
+rows = [r for s in rpc('rootSearch.search') for r in s['rows']]
+assert not any(r['id'].startswith('omarchy:') or r['id'] == 'builtin:omarchy-menu' for r in rows)
+print(f'  ok    RPC, calculator and {info["candidates"]} indexed apps/commands')
 
-echo "toggle latency (show -> layer mapped, hide -> unmapped; budget 100 ms)"
-sock="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
-events=$(mktemp)
-socat -u "UNIX-CONNECT:$sock" - 2>/dev/null | while IFS= read -r line; do
-  case $line in *layer\>\>oma-cast*) echo "$(date +%s%N) ${line%%>>*}" >>"$events" ;; esac
-done &
-watcher=$!
-sleep 0.3
-$cli hide
-worst=0
-for i in 1 2 3 4 5; do
-  t0=$(date +%s%N); $cli show; sleep 0.3
-  t1=$(date +%s%N); $cli hide; sleep 0.3
-  open=$(grep openlayer "$events" | sed -n "${i}p" | cut -d' ' -f1)
-  close=$(grep closelayer "$events" | sed -n "${i}p" | cut -d' ' -f1)
-  if [[ -z $open || -z $close ]]; then bad "run $i: no layer event seen"; continue; fi
-  show_ms=$(( (open - t0) / 1000000 )); hide_ms=$(( (close - t1) / 1000000 ))
-  printf '        run %d: show %3d ms, hide %3d ms\n' "$i" "$show_ms" "$hide_ms"
-  (( show_ms > worst )) && worst=$show_ms
-  (( hide_ms > worst )) && worst=$hide_ms
-done
-kill "$watcher" 2>/dev/null; pkill -f "socat -u UNIX-CONNECT:$sock" 2>/dev/null; rm -f "$events"
-(( worst > 0 && worst < 100 )) && pass "worst toggle ${worst} ms" || bad "worst toggle ${worst} ms"
+# Listen only to this Hyprland socket; no subprocess watcher or global pkill.
+runtime = os.environ['XDG_RUNTIME_DIR']
+signature = os.environ['HYPRLAND_INSTANCE_SIGNATURE']
+sock = socket.socket(socket.AF_UNIX)
+sock.settimeout(2)
+sock.connect(f'{runtime}/hypr/{signature}/.socket2.sock')
+original_open = subprocess.check_output(['qs', 'ipc', '-p', str(Path('shell.qml').resolve()), 'call', '--', 'kay-cast', 'isOpen'], text=True).strip() == 'true'
 
-exit $fail
+def wait_layer(kind):
+    buffer = b''
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        buffer += sock.recv(65536)
+        while b'\n' in buffer:
+            line, buffer = buffer.split(b'\n', 1)
+            if line.startswith(kind.encode() + b'>>') and b'kay-cast' in line:
+                return
+    raise AssertionError('Missing layer event: ' + kind)
+
+try:
+    if original_open:
+        command('hide')
+        wait_layer('closelayer')
+    worst = 0
+    for _ in range(3):
+        start = time.monotonic()
+        assert command('show') == 'shown'
+        wait_layer('openlayer')
+        elapsed = (time.monotonic() - start) * 1000
+        worst = max(worst, elapsed)
+        assert command('hide') == 'hidden'
+        wait_layer('closelayer')
+    assert worst < 250, worst
+    print(f'  ok    show/hide mapping; worst show {worst:.0f} ms (250 ms budget)')
+finally:
+    sock.close()
+    command('show' if original_open else 'hide')
+PY

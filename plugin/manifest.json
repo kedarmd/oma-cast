@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "typecraft.oma-cast",
-  "name": "Oma Cast",
-  "version": "0.0.1",
+  "id": "kmdot.kay-cast",
+  "name": "kay-cast",
+  "version": "0.1.0",
   "author": "typecraft",
-  "description": "A Raycast-style launcher for Omarchy",
+  "description": "A Raycast-style launcher for CachyOS + kmDot; standalone entry: shell.qml",
   "kinds": [
     "menu"
   ],

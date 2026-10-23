@@ -7,14 +7,20 @@ var FALLBACKS = [
   { id: "fallback:agent", title: "Ask default agent", icon: "󰚩", subtitle: "New terminal session · Ctrl+Alt+Enter" }
 ]
 
+function webSearch(fallback, keywords) {
+  return { id: "builtin:" + fallback.id.slice("fallback:".length) + "-search", title: fallback.title,
+    subtitle: "Quicklink", glyph: fallback.icon, keywords: keywords,
+    arguments: [{ name: "query", placeholder: "Query", required: true }], run: { url: fallback.url },
+    rootSearch: { when: "always" } }
+}
+
 var BUILTINS = [
+  webSearch(FALLBACKS[0], ["google"]),
+  webSearch(FALLBACKS[1], ["ddg"]),
   {
-    id: "builtin:omarchy-menu",
-    title: "Omarchy Menu",
-    subtitle: "Open the original Omarchy menu",
-    keywords: ["menu", "omarchy"],
-    run: { summon: "omarchy.menu", payload: "{\"menu\":\"root\"}" },
-    rootSearch: { when: "always" }
+    id: "builtin:disabled-commands", title: "Disabled Commands", subtitle: "Restore hidden apps and commands",
+    glyph: "\uf06e", keywords: ["enable", "restore", "hidden", "settings"],
+    run: { push: { kind: "disabled-commands", title: "Disabled Commands" } }, rootSearch: { when: "always" }
   },
   {
     id: "builtin:calculator-history",
@@ -87,9 +93,10 @@ function builtinCandidate(def) {
     subtitle: def.subtitle || "",
     keywords: def.keywords || [],
     typeLabel: "Command",
-    glyph: def.glyph || "",
-    glyphFont: def.glyph ? "" : "omarchy",
+    glyph: def.glyph || "\uf013",
+    glyphFont: "",
     run: def.run,
+    arguments: def.arguments || [],
     rootSearch: def.rootSearch || { when: "always" }
   }
 }
@@ -196,11 +203,19 @@ function historySections(history, query, nowMs, filter) {
   return out
 }
 
+var FILTERS = [{ id: "all", title: "All" }, { id: "applications", title: "Applications" }, { id: "commands", title: "Commands" }]
+
+function passesFilter(candidate, filter) {
+  if (!filter || filter === "all") return true
+  return (candidate.type === "application") === (filter === "applications")
+}
+
 function rootSections(candidates, query, ctx, deps) {
   var q = String(query || "").trim()
+  var filtered = ctx.filter && ctx.filter !== "all"
   var decorated = []
   for (var i = 0; i < candidates.length; i++) {
-    if (!isEnabled(candidates[i], ctx)) continue
+    if (!isEnabled(candidates[i], ctx) || !passesFilter(candidates[i], ctx.filter)) continue
     decorated.push(decorate(candidates[i], ctx, deps))
   }
   var opts = rankOptions(ctx)
@@ -209,9 +224,9 @@ function rootSections(candidates, query, ctx, deps) {
     var searchable = decorated.filter(function(c) { return c.rootSearch.when !== "empty" })
     var results = deps.Ranker.rank(searchable, q, opts)
     var sections = []
-    if (ctx.calculation) sections.push({ id: "calculator", title: "Calculator", rows: [{ candidate: calculatorCandidate(ctx.calculation), record: null }] })
+    if (ctx.calculation && !filtered) sections.push({ id: "calculator", title: "Calculator", rows: [{ candidate: calculatorCandidate(ctx.calculation), record: null }] })
     if (results.length > 0) sections.push({ id: "results", title: "Results", rows: results })
-    sections.push({ id: "fallback-commands", title: "Use “" + q + "” with…", rows: fallbackRows(q) })
+    if (!filtered) sections.push({ id: "fallback-commands", title: "Use “" + q + "” with…", rows: fallbackRows(q) })
     return sections
   }
 
@@ -270,10 +285,12 @@ function actionsFor(candidate) {
     }
     return calc
   }
+  if (candidate.kind === "disabled-command") return [{ id: "enable", title: "Enable Command", shortcut: "↵", section: "primary", icon: "\uf06e" }]
   var primary
   var list = []
   switch (candidate.kind) {
     case "app": primary = { id: "open", title: "Open Application", icon: "" }; break
+    case "desktop-action":
     case "omarchy-action": primary = { id: "open", title: "Run", icon: "" }; break
     case "omarchy-menu":
     case "omarchy-link": primary = { id: "open", title: "Open Menu", icon: "" }; break
@@ -289,7 +306,7 @@ function actionsFor(candidate) {
   if (candidate.kind === "fallback") return list
 
   if (candidate.kind === "app") list.push({ id: "copy-id", title: "Copy Desktop ID", shortcut: "Ctrl Shift C", section: "copy", icon: "" })
-  if (candidate.kind === "omarchy-action") list.push({ id: "copy-command", title: "Copy Command", shortcut: "Ctrl Shift C", section: "copy", icon: "" })
+  if (candidate.kind === "omarchy-action" || candidate.kind === "desktop-action") list.push({ id: "copy-command", title: "Copy Command", shortcut: "Ctrl Shift C", section: "copy", icon: "" })
 
   if (candidate.favoriteOrder === null || candidate.favoriteOrder === undefined) {
     list.push({ id: "favorite-add", title: "Add to Favorites", shortcut: "Ctrl Shift F", section: "favorites", icon: "" })
@@ -325,11 +342,45 @@ function fallbackUrl(candidate, query) {
   return String(candidate.url || "").replace("{query}", encodeURIComponent(String(query || "").trim()))
 }
 
+function fillArguments(template, values) {
+  return String(template || "").replace(/\{(\w+)\}/g, function(_, name) { return encodeURIComponent(String((values && values[name]) || "").trim()) })
+}
+function missingArgument(defs, values) {
+  for (var i = 0; i < (defs || []).length; i++) if (defs[i].required && !String((values && values[defs[i].name]) || "").trim()) return i
+  return -1
+}
+function confirmationFor(id, action) {
+  if (action !== "delete-all-entries") return null
+  return { title: "Delete All Entries", message: "This removes every calculation from Calculator History.", primary: "Delete All", destructive: true }
+}
+function aboutFor(c, nowMs) {
+  var rows = []
+  function add(label, value) { if (value !== undefined && value !== null && String(value) !== "") rows.push({ label: label, value: String(value) }) }
+  if (c.kind === "calculator") { add("Question", c.calcInput); add("Answer", c.calcResult); add("Type", c.calcResultCaption); return rows }
+  if (c.kind === "calculator-history") { add("Question", c.subtitle); add("Answer", c.title); add("Saved", c.typeLabel); return rows }
+  add("Title", c.title); add("Type", c.typeLabel); add("Location", c.subtitle); add("ID", c.id)
+  if (c.kind === "app") add("Desktop Entry", c.appId + ".desktop")
+  if (c.argv) add("Command", depsCommand(c.argv))
+  add("URL", c.url || (c.run && c.run.url))
+  add("Arguments", (c.arguments || []).map(function(a) { return a.name + (a.required ? "" : " (optional)") }).join(", "))
+  add("Keywords", (c.keywords || []).join(", ")); add("Alias", c.alias)
+  if (typeof c.favoriteOrder === "number") add("Favorite", "#" + (c.favoriteOrder + 1))
+  if (c.openedAt) add("Last Opened", relativeTime(c.openedAt, nowMs))
+  if (c.frecency > 1) add("Frecency", Math.round(c.frecency * 10) / 10)
+  return rows
+}
+function depsCommand(argv) { return argv.map(function(x) { return String(x) }).join(" ") }
+
 if (typeof module !== "undefined") {
   module.exports = {
     SUGGESTIONS_LIMIT: SUGGESTIONS_LIMIT,
     FALLBACKS: FALLBACKS,
     BUILTINS: BUILTINS,
+    FILTERS: FILTERS,
+    fillArguments: fillArguments,
+    missingArgument: missingArgument,
+    confirmationFor: confirmationFor,
+    aboutFor: aboutFor,
     appCandidate: appCandidate,
     menuCandidate: menuCandidate,
     menuCandidates: menuCandidates,

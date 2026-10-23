@@ -1,5 +1,5 @@
 
-var APP = "oma-cast"
+var APP = "kay-cast"
 
 function xdg(env, name, homeFallback) {
   var value = String(env(name) || "")

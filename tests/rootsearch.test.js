@@ -144,3 +144,28 @@ test("favourite reordering", () => {
 test("fallback URLs encode the query", () => {
   assert.equal(RS.fallbackUrl(RS.FALLBACKS[0], " a&b c "), "https://www.google.com/search?q=a%26b%20c")
 })
+
+test("quicklinks accept inline query arguments and safely encode them", () => {
+  const match = results("google")[0].rows[0].candidate
+  assert.ok(match.arguments)
+  assert.equal(RS.missingArgument(match.arguments, {}), 0)
+  assert.equal(RS.fillArguments(match.run.url, { query: " a&b " }), "https://www.google.com/search?q=a%26b")
+  assert.equal(RS.missingArgument(match.arguments, { query: "search" }), -1)
+})
+
+test("root filters limit results to applications or commands", () => {
+  const appSections = RS.rootSections(candidates(), "", ctx({ filter: "applications" }), deps)
+  assert.ok(appSections.every((s) => s.id === "apps"))
+  assert.ok(appSections.flatMap((s) => s.rows).every((r) => r.candidate.type === "application"))
+  const commandSections = RS.rootSections(candidates(), "lock", ctx({ filter: "commands", calculation: { result: "1" } }), deps)
+  assert.ok(commandSections.every((s) => s.id === "results"))
+  assert.ok(commandSections.flatMap((s) => s.rows).every((r) => r.candidate.type === "command"))
+})
+
+test("calculator history clearing asks for confirmation and item info is useful", () => {
+  assert.equal(RS.confirmationFor("calculator-history:x", "delete-all-entries").destructive, true)
+  assert.equal(RS.confirmationFor("app:firefox", "open"), null)
+  const about = Object.fromEntries(RS.aboutFor(RS.appCandidate(apps[0]), NOW).map((r) => [r.label, r.value]))
+  assert.equal(about.Title, "Firefox")
+  assert.equal(about["Desktop Entry"], "firefox.desktop")
+})

@@ -9,7 +9,7 @@ import "../core/Calculator.js" as Calculator
 Item {
   id: data
 
-  // $XDG_CACHE_HOME/oma-cast; empty until the directory exists.
+  // $XDG_CACHE_HOME/kay-cast; empty until the directory exists.
   property string cacheDir: ""
   property bool ratesEnabled: true
 
@@ -105,7 +105,7 @@ Item {
 
   Process {
     id: zoneProcess
-    command: ["bash", "-c", "for z in \"$@\"; do TZ=$z printf '%s %(%z)T\\n' \"$z\" -1; done", "oma-cast-zones"].concat(Calculator.zoneList())
+    command: ["bash", "-c", "for z in \"$@\"; do TZ=$z printf '%s %(%z)T\\n' \"$z\" -1; done", "kay-cast-zones"].concat(Calculator.zoneList())
     stdout: StdioCollector {
       onStreamFinished: {
         var next = ({})

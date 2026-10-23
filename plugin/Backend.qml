@@ -1,15 +1,15 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
-import qs.Commons
+import "compat"
 import "core/Rpc.js" as Rpc
 import "core/Paths.js" as Paths
 import "core/Log.js" as Log
 import "core/Schema.js" as Schema
 import "core/Ranker.js" as Ranker
 import "core/Frecency.js" as Frecency
-import "core/OmarchyMenu.js" as OmarchyMenu
 import "core/RootSearch.js" as RootSearch
+import "core/Desktop.js" as Desktop
 import "core/Agent.js" as Agent
 import "core/Calculator.js" as Calculator
 import "services"
@@ -17,12 +17,12 @@ import "services"
 Item {
   id: backend
 
+  readonly property string desktopHelper: decodeURIComponent(Qt.resolvedUrl("../bin/kay-cast-desktop").toString().replace("file://", ""))
   readonly property string version: "0.1.0"
   readonly property var paths: Paths.resolve(function(name) { return Quickshell.env(name) })
   readonly property string desktop: Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE") ? "hyprland" : "unknown"
 
   property var appLibrary: null
-  property var summon: null
 
   property var config: Schema.withConfigDefaults(null)
   property bool directoriesReady: false
@@ -30,7 +30,7 @@ Item {
 
   readonly property var registry: Rpc.createRegistry()
   readonly property double startedAt: Date.now()
-  readonly property var deps: ({ Ranker: Ranker, Frecency: Frecency, OmarchyMenu: OmarchyMenu })
+  readonly property var deps: ({ Ranker: Ranker, Frecency: Frecency })
 
   property var candidates: []
   property var candidatesById: ({})
@@ -74,8 +74,10 @@ Item {
     var next = []
     var apps = backend.appEntries()
     for (var i = 0; i < apps.length; i++) if (apps[i] && apps[i].id) next.push(RootSearch.appCandidate(apps[i]))
-    next = next.concat(RootSearch.menuCandidates(menuSource.tree, menuSource.guards, menuSource.providerItems, backend.deps))
-    for (var b = 0; b < RootSearch.BUILTINS.length; b++) next.push(RootSearch.builtinCandidate(RootSearch.BUILTINS[b]))
+    next = next.concat(menuSource.candidates, menuSource.custom)
+    for (var b = 0; b < RootSearch.BUILTINS.length; b++) {
+      next.push(RootSearch.builtinCandidate(RootSearch.BUILTINS[b]))
+    }
     var byId = ({})
     for (var j = 0; j < next.length; j++) byId[next[j].id] = next[j]
     backend.candidates = next
@@ -105,8 +107,9 @@ Item {
 
   // ------------------------------------------------------------ calculator
 
-  // 12- or 24-hour clock from the Qt locale, as the system shows it.
-  readonly property bool hour12: Qt.locale().timeFormat(Locale.ShortFormat).toLowerCase().indexOf("ap") >= 0
+  readonly property bool hour12: backend.config.clockFormat === "auto"
+    ? Qt.locale().timeFormat(Locale.ShortFormat).toLowerCase().indexOf("ap") >= 0
+    : backend.config.clockFormat === "12h"
 
   function calculatorEnv() {
     return {
@@ -115,7 +118,8 @@ Item {
       hour12: backend.hour12,
       rates: backend.config.currencyRates ? calculatorData.rates : null,
       zones: calculatorData.zones,
-      remToPxRate: 16                    // Raycast's default remToPxRate [O]
+      remToPxRate: backend.config.remToPxRate,
+      workHoursPerDay: backend.config.workHoursPerDay
     }
   }
 
@@ -147,9 +151,10 @@ Item {
         Util.execArgv(["wl-copy", "--", entry.copy])
         return { close: true, hud: "Copied to Clipboard" }
       case "paste-answer":
+        if (!menuSource.canPaste) throw new Error("Paste Answer requires wl-clipboard and wtype; Copy Answer is available")
         if (!historyId) backend.saveCalculation(entry)
-        // Omarchy's own paste: copies, waits for our window to unmap, types.
-        Util.execArgv(["omarchy-clipboard-paste-text", entry.copy])
+        // Desktop adapter waits for the surface to unmap before pasting.
+        Util.execArgv([backend.desktopHelper, "paste", entry.copy])
         return { close: true }
       case "copy-question-answer":
         if (!historyId) backend.saveCalculation(entry)
@@ -178,17 +183,6 @@ Item {
 
   // ------------------------------------------------------------- execution
 
-  function summonPlugin(id, payload) {
-    if (backend.summon && backend.summon(id, payload)) return
-    Quickshell.execDetached(["omarchy-shell", "shell", "summon", id, payload || "{}"])
-  }
-
-  function runShell(command) {
-    var summon = OmarchyMenu.summonAction(command)
-    if (summon) backend.summonPlugin(summon.id, summon.payload)
-    else Util.execDetached(command)
-  }
-
   function recordVisit(id, query) {
     if (!frecencyStore.loaded) return
     frecencyStore.update(function(doc) {
@@ -209,14 +203,6 @@ Item {
     backend.emit("settings.commandSettingsChanged", { commandId: id })
   }
 
-  function omarchyRouteFor(candidate) {
-    if (candidate.kind === "omarchy-action") {
-      var item = menuSource.tree.items[candidate.menuId]
-      return item && item.parent ? item.parent : "root"
-    }
-    return candidate.kind === "omarchy-link" ? candidate.target : candidate.menuId
-  }
-
   function performAction(data) {
     var id = String(data && data.id || "")
     var action = String(data && data.action || "open")
@@ -229,40 +215,42 @@ Item {
         case "app":
           backend.recordVisit(id, query)
           if (backend.appLibrary) backend.appLibrary.launch(candidate.appId, candidate.title)
-          else Util.execArgv(["uwsm-app", "--", "gtk-launch", candidate.appId + ".desktop"])
+          else {
+            var entry = DesktopEntries.byId(candidate.appId)
+            if (!entry) throw new Error("Application is no longer installed")
+            if (entry.runInTerminal) {
+              if (!menuSource.canLaunchTerminal) throw new Error("Install Ghostty or set KAY_CAST_TERMINAL in kay-cast/environment")
+              Util.execArgv([backend.desktopHelper, "terminal", entry.workingDirectory || backend.paths.home].concat(entry.command))
+            } else Util.execArgv(entry.command, entry.workingDirectory || backend.paths.home)
+          }
           return { close: true }
-        case "omarchy-action":
-          if (candidate.disabled) return { toast: { style: "failure", title: candidate.title + " is already set up" } }
+        case "desktop-action":
           backend.recordVisit(id, query)
-          backend.runShell(candidate.action)
+          Util.execArgv(candidate.argv)
           return { close: true }
-        case "omarchy-menu":
-          backend.recordVisit(id, query)
-          return { push: { kind: "menu", menuId: candidate.menuId, title: candidate.title } }
-        case "omarchy-link":
-          backend.recordVisit(id, query)
-          var target = menuSource.tree.items[candidate.target]
-          if (!target) return { toast: { style: "failure", title: "Menu " + candidate.target + " not found" } }
-          return { push: { kind: "menu", menuId: target.id, title: target.label } }
         case "builtin":
+          if (candidate.run.url) {
+            var values = (data && data.arguments) || {}
+            var missing = RootSearch.missingArgument(candidate.arguments, values)
+            if (missing >= 0) throw new Error("Type a " + candidate.arguments[missing].placeholder.toLowerCase() + " first")
+            backend.recordVisit(id, query)
+            Util.execArgv(["xdg-open", RootSearch.fillArguments(candidate.run.url, values)])
+            return { close: true }
+          }
           backend.recordVisit(id, query)
           if (candidate.run.push) return { push: candidate.run.push }
-          if (candidate.run.summon) backend.summonPlugin(candidate.run.summon, candidate.run.payload || "{}")
           return { close: true }
         case "fallback":
-          Util.execArgv(["omarchy-launch-browser", RootSearch.fallbackUrl(candidate, query)])
+          Util.execArgv(["xdg-open", RootSearch.fallbackUrl(candidate, query)])
           return { close: true }
       }
       throw new Error("Cannot open " + id)
     }
 
     switch (action) {
-      case "open-in-omarchy-menu":
-        backend.summonPlugin("omarchy.menu", JSON.stringify({ menu: backend.omarchyRouteFor(candidate) }))
-        return { close: true }
       case "copy-command":
       case "copy-id":
-        Util.execArgv(["wl-copy", "--", action === "copy-id" ? candidate.appId + ".desktop" : candidate.action])
+        Util.execArgv(["wl-copy", "--", action === "copy-id" ? (candidate.appId.replace(/\.desktop$/, "") + ".desktop") : (candidate.argv ? Desktop.commandText(candidate.argv) : candidate.action)])
         return { close: true, hud: "Copied to Clipboard" }
       case "favorite-add":
       case "favorite-remove":
@@ -288,9 +276,15 @@ Item {
       case "reset-ranking":
         frecencyStore.update(function(doc) { delete doc.items[id] })
         return { toast: { style: "success", title: "Ranking reset" } }
+      case "enable":
+        backend.updateCommand(id, function(s) { delete s.enabled; return s })
+        return { toast: { style: "success", title: candidate.title + " enabled" } }
       case "disable":
         backend.updateCommand(id, function(s) { s.enabled = false; return s })
-        return { toast: { style: "success", title: candidate.title + " disabled" } }
+        return { toast: { style: "success", title: candidate.title + " disabled", actions: [
+          { id: "undo", title: "Undo", done: candidate.title + " enabled",
+            call: { method: "settings.updateCommandSettings", data: { commandId: id, enabled: true } } }
+        ] } }
     }
     throw new Error("Unknown action " + action)
   }
@@ -314,6 +308,8 @@ Item {
         return {
           version: backend.version,
           desktop: backend.desktop,
+          platform: "kmdot",
+          theme: { loaded: Color.loaded, path: Color.themePath, error: Color.lastError, palette: Color.palette },
           ready: backend.ready,
           uptimeMs: Date.now() - backend.startedAt,
           candidates: backend.candidates.length,
@@ -337,6 +333,8 @@ Item {
         for (var key in patch) {
           if (current[key] === undefined) throw new Error("Unknown general setting " + key)
           if (typeof patch[key] !== typeof current[key]) throw new Error("Setting " + key + " must be a " + typeof current[key])
+          var choices = Schema.generalChoices[key]
+          if (choices && choices.indexOf(patch[key]) < 0) throw new Error("Setting " + key + " must be one of " + choices.join(", "))
         }
         settingsStore.update(function(doc) { for (var k in patch) doc.general[k] = patch[k] })
         backend.emit("settings.generalSettingsChanged", settingsStore.doc.general)
@@ -370,10 +368,16 @@ Item {
         var view = data && data.view
         var ctx = backend.searchContext()
         var sections
-        if (view && view.kind === "menu") sections = RootSearch.submenuSections(backend.candidates, view.menuId, query, ctx, backend.deps)
+        if (view && view.kind === "disabled-commands") {
+          var hidden = backend.candidates.filter(function(c) { return ctx.commands[c.id] && ctx.commands[c.id].enabled === false })
+          var restored = hidden.map(function(c) { var r = Object.assign({}, c); r.kind = "disabled-command"; return r })
+          sections = [{ id: "disabled", title: "Disabled Commands", rows: Ranker.rank(restored, query, { nowMs: ctx.nowMs }) }]
+        }
+        else if (view && view.kind === "menu") sections = RootSearch.submenuSections(backend.candidates, view.menuId, query, ctx, backend.deps)
         else if (view && view.kind === "calculator-history") sections = RootSearch.historySections(calculatorStore.doc.history, query, ctx.nowMs, Calculator.filterHistory)
         else {
-          if (query.trim()) ctx.calculation = backend.calculate(query)
+          ctx.filter = String(data && data.filter || "all")
+          if (query.trim() && ctx.filter === "all") ctx.calculation = backend.calculate(query)
           sections = RootSearch.rootSections(backend.candidates, query, ctx, backend.deps)
         }
         return sections.map(function(s) {
@@ -390,16 +394,39 @@ Item {
           if (!fallback) throw new Error("Unknown command " + (data && data.id))
           return RootSearch.actionsFor({ kind: "fallback", title: fallback.title })
         }
+        if (candidate && settingsStore.doc.commands[rowId] && settingsStore.doc.commands[rowId].enabled === false) return RootSearch.actionsFor({ kind: "disabled-command" })
         return RootSearch.actionsFor(candidate)
       },
+      getItemInfo: function(data) {
+        var rowId = String(data && data.id || ""), nowMs = Date.now()
+        if (rowId === RootSearch.CALCULATOR_ID) {
+          var calc = backend.calculate(String(data.query || ""))
+          return calc ? RootSearch.aboutFor(RootSearch.calculatorCandidate(calc), nowMs) : []
+        }
+        if (rowId.indexOf("calculator-history:") === 0) {
+          var entry = backend.historyEntry(rowId)
+          return entry ? RootSearch.aboutFor(RootSearch.historyCandidate(entry, nowMs), nowMs) : []
+        }
+        var candidate = backend.decorated(rowId)
+        if (!candidate) {
+          var fallback = RootSearch.FALLBACKS.filter(function(x) { return x.id === rowId })[0]
+          if (!fallback) throw new Error("Unknown command " + rowId)
+          return RootSearch.aboutFor({ id: fallback.id, kind: "fallback", title: fallback.title, typeLabel: "Fallback", url: fallback.url }, nowMs)
+        }
+        return RootSearch.aboutFor(candidate, nowMs)
+      },
       performAction: function(data) {
+        if (!(data && data.confirmed)) {
+          var confirmation = RootSearch.confirmationFor(String(data && data.id || ""), String(data && data.action || "open"))
+          if (confirmation) return { confirm: confirmation }
+        }
         var fallback = RootSearch.FALLBACKS.filter(function(f) { return f.id === (data && data.id) })[0]
         if (fallback) {
           if (fallback.id === Agent.FALLBACK_ID) {
             agentLauncher.start(data.query)
             return { pending: true }
           }
-          Util.execArgv(["omarchy-launch-browser", RootSearch.fallbackUrl(fallback, data.query)])
+          Util.execArgv(["xdg-open", RootSearch.fallbackUrl(fallback, data.query)])
           return { close: true }
         }
         // The calculator row is the query itself, evaluated again.
@@ -495,10 +522,10 @@ Item {
     }
   }
 
-  OmarchyMenuSource {
+  DesktopSource {
     id: menuSource
     onRevisionChanged: rebuildTimer.restart()
-    onMessage: function(level, text, metadata) { backend.log(level, "omarchy-menu", text, metadata) }
+    onMessage: function(level, text, metadata) { backend.log(level, "desktop", text, metadata) }
   }
 
   JsonStore {

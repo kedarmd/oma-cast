@@ -2,23 +2,19 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
-import qs.Commons
+import "compat"
 import "ui"
 
 Item {
   id: root
 
-  property string omarchyPath: Quickshell.env("OMARCHY_PATH")
-  property var shell: null
-  property var manifest: null
-
-  readonly property string pluginId: (root.manifest && root.manifest.id) || "typecraft.oma-cast"
 
   property bool opened: false
   property double openedAt: 0
 
 
   function open(payloadJson) {
+    Color.refresh()
     var payload = ({})
     try { payload = JSON.parse(payloadJson || "{}") } catch (e) { payload = ({}) }
     var wasOpen = root.opened
@@ -37,16 +33,11 @@ Item {
 
   function show() {
     if (root.opened) return
-    if (root.shell && root.shell.summon(root.pluginId, "{}")) return
     root.open("{}")
   }
 
   function hide() {
     if (!root.opened) return
-    if (root.shell && root.shell.hide(root.pluginId)) {
-      root.close()
-      return
-    }
     root.close()
   }
 
@@ -72,8 +63,6 @@ Item {
 
   Backend {
     id: backend
-    appLibrary: root.shell ? root.shell.appLibrary : null
-    summon: function(id, payload) { return root.shell ? root.shell.summon(id, payload) : false }
   }
 
   Connections {
@@ -95,14 +84,14 @@ Item {
   }
 
   GlobalShortcut {
-    appid: "oma-cast"
+    appid: "kay-cast"
     name: "toggle"
-    description: "Toggle oma-cast"
+    description: "Toggle kay-cast"
     onPressed: root.toggle()
   }
 
   IpcHandler {
-    target: "oma-cast"
+    target: "kay-cast"
 
     function toggle(): string {
       root.toggle()

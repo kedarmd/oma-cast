@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+terminal_tools() {
+  terminal=${KAY_CAST_TERMINAL:-ghostty}
+  case "$terminal" in ghostty|kitty|foot|alacritty) ;; *) fail 'KAY_CAST_TERMINAL must be ghostty, kitty, foot or alacritty' ;; esac
+  command -v "$terminal" >/dev/null || fail "Terminal not installed: $terminal"
+}
+agent_tools() {
+  agent=${KAY_CAST_AGENT:-opencode}
+  case "$agent" in opencode|codex|claude) ;; *) fail 'KAY_CAST_AGENT must be opencode, codex or claude' ;; esac
+  command -v "$agent" >/dev/null || fail "Agent not installed: $agent"
+  terminal_tools
+}
+case ${1:-} in
+  agent-check) agent_tools ;;
+  agent)
+    agent_tools
+    prompt=${2:?Type a question first}
+    case "$agent" in
+      opencode) args=(opencode --prompt "$prompt") ;;
+      codex) args=(codex -- "$prompt") ;;
+      claude) args=(claude -- "$prompt") ;;
+    esac
+    exec "$terminal" -e "${args[@]}"
+    ;;
+  terminal)
+    terminal_tools
+    [[ $# -ge 3 ]] || fail 'usage: kay-cast-desktop terminal <cwd> <command> [args]'
+    cd -- "$2" || fail 'Application working directory is unavailable'
+    shift 2
+    exec "$terminal" -e "$@"
+    ;;
+  paste)
+    command -v wl-copy >/dev/null || fail 'Install wl-clipboard to copy text'
+    command -v wtype >/dev/null || fail 'Install wtype for Paste Answer (Copy Answer works without it)'
+    # Wait for kay-cast to unmap before reading the restored active window.
+    sleep 0.2
+    class=$(hyprctl activewindow -j | sed -n 's/.*"class": *"\([^"]*\)".*/\1/p')
+    printf '%s' "${2-}" | wl-copy
+    case ${class,,} in
+      *ghostty*|*kitty*|*alacritty*|*foot*|*terminal*) wtype -M ctrl -M shift -k v -m shift -m ctrl ;;
+      *) wtype -M ctrl -k v -m ctrl ;;
+    esac
+    ;;
+  *) fail 'usage: kay-cast-desktop agent-check | agent <prompt> | paste <text>' ;;
+esac

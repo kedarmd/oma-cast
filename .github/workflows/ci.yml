@@ -8,8 +8,7 @@ on:
 
 jobs:
   test:
-    # WarpBuild's 2-vCPU Ubuntu runner.
-    runs-on: warp-ubuntu-latest-x64-2x
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -18,12 +17,16 @@ jobs:
           node-version: 24
 
       # Glob, not a directory: Node 24 doesn't expand `node --test tests/`.
-      # The live Omarchy menu test skips itself when Omarchy isn't installed.
+      # Desktop-only theme/menu fixtures skip when the source is unavailable.
       - name: Unit tests
         run: node --test tests/*.test.js
 
       - name: Shell syntax
-        run: bash -n bin/oma-cast tests/smoke.sh
+        run: |
+          for script in bin/kay-cast bin/kay-cast-desktop bin/kay-cast-launch tests/smoke.sh; do
+            bash -n "$script"
+          done
+          python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("bin/kay-cast-hyprland.py").read_text())'
 
       - name: Plugin manifest is valid JSON
         run: node -e 'JSON.parse(require("fs").readFileSync("plugin/manifest.json", "utf8"))'

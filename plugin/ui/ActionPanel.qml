@@ -1,11 +1,12 @@
 import QtQuick
-import qs.Commons
+import "../compat"
 
 Rectangle {
   id: panel
 
   property var actions: []
   property string filter: ""
+  property string placeholder: "Search for actions…"
   property int selectedIndex: 0
   property var look: null
   property real zoom: 1
@@ -36,8 +37,8 @@ Rectangle {
 
   width: px(340)
   height: Math.min(px(360), list.contentHeight + searchRow.height + px(16))
-  radius: Math.max(Style.cornerRadius, px(8))
-  color: look.background
+  radius: px(14)
+  color: look.elevatedBackground
   border.width: 1
   border.color: Util.alpha(look.foreground, 0.15)
 
@@ -76,7 +77,7 @@ Rectangle {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         height: panel.px(34)
-        radius: Math.max(Style.cornerRadius, panel.px(6))
+        radius: panel.px(8)
         color: index === panel.selectedIndex ? panel.look.selectedBackground : "transparent"
 
         Text {
@@ -90,7 +91,7 @@ Rectangle {
           text: modelData.icon || ""
           color: panel.look.foreground
           opacity: 0.75
-          font.family: modelData.icon === "" ? "omarchy" : panel.look.fontFamily
+          font.family: Style.iconFamily
           font.pixelSize: panel.px(13)
         }
 
@@ -152,7 +153,7 @@ Rectangle {
       anchors.rightMargin: panel.px(14)
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText
-      text: panel.filter || "Search for actions…"
+      text: panel.filter || panel.placeholder
       opacity: panel.filter ? 1 : 0.45
       color: panel.look.foreground
       elide: Text.ElideLeft

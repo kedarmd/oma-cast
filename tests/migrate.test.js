@@ -86,3 +86,12 @@ test("config keeps known keys of the right type and drops the rest", () => {
   assert.equal(c.keepVisibleOnFocusLoss, false)
   assert.equal(c.extra, undefined)
 })
+
+test("config validates calculator ranges and declared general choices", () => {
+  const c = Schema.withConfigDefaults({ remToPxRate: 10, workHoursPerDay: 0, clockFormat: "24h" })
+  assert.equal(c.remToPxRate, 10)
+  assert.equal(c.workHoursPerDay, 8)
+  assert.equal(c.clockFormat, "24h")
+  assert.equal(Schema.withConfigDefaults({ clockFormat: "36h" }).clockFormat, "auto")
+  assert.deepEqual(Schema.generalChoices.navigationBindings, ["emacs", "vim-motions"])
+})
